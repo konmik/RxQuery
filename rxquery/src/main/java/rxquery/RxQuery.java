@@ -6,14 +6,14 @@ import java.util.regex.Pattern;
 import rx.Observable;
 import rx.Scheduler;
 import rx.Subscriber;
+import rx.functions.Action0;
 import rx.functions.Func0;
 import rx.functions.Func1;
 import rx.subjects.PublishSubject;
-import rx.subjects.SerializedSubject;
 
 /**
  * A class that allows to execute queries with a thread lock,
- * register updatable queries and notify updatables with database change results.
+ * registers updatable queries and notifies updatables with database change results.
  * All actions, notifications and updates occur on a background scheduler.
  * All results from the background scheduler will be delivered on a foreground scheduler.
  */
@@ -22,7 +22,7 @@ public class RxQuery {
     private final Scheduler foregroundScheduler;
     private final int debounceMs;
 
-    private final SerializedSubject<String, String> bus = new SerializedSubject<>(PublishSubject.<String>create());
+    private final PublishSubject<String> bus = PublishSubject.create();
     private final Object lock = new Object();
 
     /**
@@ -39,7 +39,7 @@ public class RxQuery {
     }
 
     /**
-     * Immediately executes a query in the current thread, performing a lock on a database.
+     * Immediately executes a query on the current thread, performing a lock on a database.
      *
      * @param query a query to execute.
      * @param <R>   query result type.
@@ -61,8 +61,8 @@ public class RxQuery {
 
     /**
      * Creates an observable that executes a given query in the current thread immediately and
-     * re-executes the query on a background scheduler in case of notifications that match a given regex.
-     * The reason why first query in immediate is that user should not see how an empty screen blinks.
+     * re-executes the query on a background scheduler in case of notifications that match a given pattern.
+     * The reason why first query is immediate is that user should not see an empty screen.
      *
      * @param query   a query to execute and to use for data updates
      * @param matches a data set to observe for updates
@@ -100,12 +100,10 @@ public class RxQuery {
 
     /**
      * Executes an action on a background scheduler.
-     * Notifies all subscribed updatables with returned data set after the execution but
-     * no updates will be send on the null result.
+     * Notifies all subscribed updatables with returned data set after the execution.
      *
      * @param action an action to execute. The action must return a DataSet describing
-     *               data changes. It is safe to return null in case
-     *               of failed transaction.
+     *               data changes.
      * @return an observable that needs to be subscribed to run the action
      */
     public Observable<Void> execution(final Func0<DataDescription> action) {
@@ -116,8 +114,7 @@ public class RxQuery {
                 synchronized (lock) {
                     result = action.call();
                 }
-                if (result != null)
-                    bus.onNext(result.getDescription());
+                bus.onNext(result.getDescription());
                 subscriber.onCompleted();
             }
         }).subscribeOn(backgroundScheduler).observeOn(foregroundScheduler);
@@ -128,7 +125,12 @@ public class RxQuery {
      *
      * @param result a data set describing data changes
      */
-    public void notifyDataChange(DataDescription result) {
-        bus.onNext(result.getDescription());
+    public void notifyDataChange(final DataDescription result) {
+        backgroundScheduler.createWorker().schedule(new Action0() {
+            @Override
+            public void call() {
+                bus.onNext(result.getDescription());
+            }
+        });
     }
 }

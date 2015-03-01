@@ -70,7 +70,7 @@ public class RxQueryTest extends TestCase {
         assertEquals(1, resultCounter.get());
 
         background.advanceTimeBy(300, TimeUnit.MILLISECONDS);
-        foreground.triggerActions();
+        foreground.advanceTimeBy(300, TimeUnit.MILLISECONDS);
 
         assertEquals(2, queryCounter.get());
         assertEquals(2, resultCounter.get());
