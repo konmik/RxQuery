@@ -125,11 +125,12 @@ public class RxQuery {
      *
      * @param result a data set describing data changes
      */
-    public void notifyDataChange(final DataDescription result) {
+    public void notifyDataChange(DataDescription result) {
+        final String description = result.getDescription();
         backgroundScheduler.createWorker().schedule(new Action0() {
             @Override
             public void call() {
-                bus.onNext(result.getDescription());
+                bus.onNext(description);
             }
         });
     }
