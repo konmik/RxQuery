@@ -1,51 +1,57 @@
 package rxquery;
 
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Pattern;
 
 import rx.Observable;
 import rx.Scheduler;
 import rx.Subscriber;
 import rx.functions.Action0;
+import rx.functions.Action1;
 import rx.functions.Func0;
 import rx.functions.Func1;
 import rx.subjects.PublishSubject;
 
+import static java.util.Collections.singletonList;
+
 /**
  * A class that allows to execute queries with a thread lock,
- * registers updatable queries and notifies updatables with database change results.
- * All actions, notifications and updates occur on a background scheduler.
- * All results from the background scheduler will be delivered on a foreground scheduler.
+ * registers updatable queries and notifies updatables with database change events.
+ * All executions, notifications and updates occur on the background scheduler.
+ * All results from the background scheduler will be delivered on the foreground scheduler.
  */
-public class RxQuery {
+public final class RxQuery {
     private final Scheduler backgroundScheduler;
     private final Scheduler foregroundScheduler;
+    private final Action1<Action0> executor;
     private final int debounceMs;
 
-    private final PublishSubject<String> bus = PublishSubject.create();
+    private final PublishSubject<String> updates = PublishSubject.create();
     private final Object lock = new Object();
 
     /**
      * @param backgroundScheduler a scheduler that will be used for background actions execution.
      * @param foregroundScheduler a scheduler that will be used for background actions result delivery.
      * @param debounceMs          amount of time in milliseconds to wait after a matching
-     *                            notification before update an updatable.
-     *                            See {@link rxquery.RxQuery#updatable}, {@link rx.Observable#debounce}
+     *                            table change before updating an updatable.
+     *                            See {@link #updatable}, {@link rx.Observable#debounce}
+     * @param executor            an executor for {@link #execution} calls. Use it to
+     *                            supply transaction executor that is specific to the database api.
      */
-    public RxQuery(Scheduler backgroundScheduler, Scheduler foregroundScheduler, int debounceMs) {
+    public RxQuery(Scheduler backgroundScheduler, Scheduler foregroundScheduler, int debounceMs, Action1<Action0> executor) {
         this.backgroundScheduler = backgroundScheduler;
         this.foregroundScheduler = foregroundScheduler;
         this.debounceMs = debounceMs;
+        this.executor = executor;
     }
 
     /**
-     * Immediately executes a query on the current thread, performing a lock on a database.
+     * Immediately executes a query on the current thread, performing a lock on the database.
      *
      * @param query a query to execute.
      * @param <R>   query result type.
      * @return an observable that will emit a query result.
      */
-    public <R> Observable<R> query(final Func0<R> query) {
+    public <R> Observable<R> immediate(final Func0<R> query) {
         return Observable.create(new Observable.OnSubscribe<R>() {
             @Override
             public void call(Subscriber<? super R> subscriber) {
@@ -61,23 +67,27 @@ public class RxQuery {
 
     /**
      * Creates an observable that executes a given query in the current thread immediately and
-     * re-executes the query on a background scheduler in case of notifications that match a given pattern.
-     * The reason why first query is immediate is that user should not see an empty screen.
+     * re-executes the query on the background scheduler in case of a given tables change.
+     * The reason why first query is immediate is that a user should not see an empty screen
+     * in case if the screen transition is immediate.
      *
-     * @param query   a query to execute and to use for data updates
-     * @param matches a data set to observe for updates
-     * @param <R>     a type of returning data
+     * @param <R>    a type of returning data
+     * @param tables a table list to observe for updates
+     * @param query  a query to execute and to use for data updates
      * @return an observable that returns query results
      */
-    public <R> Observable<R> updatable(final Func0<R> query, DataPattern matches) {
-        final Pattern pattern = matches.getPattern(); // benchmark results: compilation = 0.2 ms, matching = 0.1ms on a slow device
-        return bus
+    public <R> Observable<R> updatable(final Iterable<String> tables, final Func0<R> query) {
+        return updates
             .filter(new Func1<String, Boolean>() {
                 @Override
-                public Boolean call(String s) {
-                    return pattern.matcher(s).matches();
+                public Boolean call(String it) {
+                    for (String table : tables)
+                        if (table.equals(it))
+                            return Boolean.TRUE;
+                    return Boolean.FALSE;
                 }
             })
+            .observeOn(backgroundScheduler)
             .debounce(debounceMs, TimeUnit.MILLISECONDS, backgroundScheduler)
             .map(new Func1<String, R>() {
                 @Override
@@ -99,39 +109,41 @@ public class RxQuery {
     }
 
     /**
-     * Executes an action on a background scheduler.
-     * Notifies all subscribed updatables with returned data set after the execution.
-     *
-     * @param action an action to execute. The action must return a DataSet describing
-     *               data changes.
-     * @return an observable that needs to be subscribed to run the action
+     * A shortcut for {@link #updatable(Iterable, Func0)} with one table.
      */
-    public Observable<Void> execution(final Func0<DataDescription> action) {
-        return Observable.create(new Observable.OnSubscribe<Void>() {
-            @Override
-            public void call(Subscriber<? super Void> subscriber) {
-                DataDescription result;
-                synchronized (lock) {
-                    result = action.call();
-                }
-                bus.onNext(result.getDescription());
-                subscriber.onCompleted();
-            }
-        }).subscribeOn(backgroundScheduler).observeOn(foregroundScheduler);
+    public <R> Observable<R> updatable(String table, Func0<R> query) {
+        return updatable(singletonList(table), query);
     }
 
     /**
-     * Notifies updatables about indirect (around {@link rxquery.RxQuery#execution)} data change.
+     * Executes an action on a background scheduler.
+     * Notifies all subscribed updatables with data changes on given tables.
      *
-     * @param result a data set describing data changes
+     * @param tables tables that may be changed by the execution.
+     * @param action an action to execute.
+     * @return an observable that needs to be subscribed to run the action
      */
-    public void notifyDataChange(DataDescription result) {
-        final String description = result.getDescription();
-        backgroundScheduler.createWorker().schedule(new Action0() {
-            @Override
-            public void call() {
-                bus.onNext(description);
-            }
-        });
+    public Observable<Void> execution(final Iterable<String> tables, final Action0 action) {
+        return Observable
+            .create(new Observable.OnSubscribe<Void>() {
+                @Override
+                public void call(Subscriber<? super Void> subscriber) {
+                    synchronized (lock) {
+                        executor.call(action);
+                    }
+                    for (String table : tables)
+                        updates.onNext(table);
+                    subscriber.onCompleted();
+                }
+            })
+            .subscribeOn(backgroundScheduler)
+            .observeOn(foregroundScheduler);
+    }
+
+    /**
+     * A shortcut for {@link #execution(Iterable, Action0)} with one table.
+     */
+    public Observable<Void> execution(String table, Action0 action) {
+        return execution(singletonList(table), action);
     }
 }

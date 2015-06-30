@@ -6,6 +6,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
+import rx.Subscription;
+import rx.functions.Action0;
 import rx.functions.Action1;
 import rx.functions.Func0;
 import rx.schedulers.TestScheduler;
@@ -14,14 +16,20 @@ public class RxQueryTest extends TestCase {
 
     public static final String QUERY_RESULT = "query_result";
 
-    public void testQuery() throws Exception {
+    public void testImmediate() throws Exception {
         TestScheduler background = new TestScheduler();
         TestScheduler foreground = new TestScheduler();
-        RxQuery q = new RxQuery(background, foreground, 200);
+        Action1<Action0> executor = new Action1<Action0>() {
+            @Override
+            public void call(Action0 action0) {
+                action0.call();
+            }
+        };
+        RxQuery q = new RxQuery(background, foreground, 200, executor);
         final AtomicLong queryThread = new AtomicLong();
         final AtomicLong resultThread = new AtomicLong();
 
-        q.query(new Func0<String>() {
+        q.immediate(new Func0<String>() {
             @Override
             public String call() {
                 queryThread.set(Thread.currentThread().getId());
@@ -43,106 +51,89 @@ public class RxQueryTest extends TestCase {
     public void testUpdatable() throws Exception {
         TestScheduler background = new TestScheduler();
         TestScheduler foreground = new TestScheduler();
-        RxQuery q = new RxQuery(background, foreground, 200);
+        Action1<Action0> executor = new Action1<Action0>() {
+            @Override
+            public void call(Action0 action0) {
+                action0.call();
+            }
+        };
+        RxQuery q = new RxQuery(background, foreground, 200, executor);
 
         final AtomicInteger queryCounter = new AtomicInteger();
-        final AtomicInteger resultCounter = new AtomicInteger();
-        q.updatable(new Func0<String>() {
+        Subscription subscription1 = q.updatable("data", new Func0<String>() {
             @Override
             public String call() {
                 queryCounter.incrementAndGet();
                 return QUERY_RESULT;
             }
-        }, DataSet.fromTable("data")).subscribe(new Action1<String>() {
+        }).subscribe();
+
+        foreground.advanceTimeBy(300, TimeUnit.MILLISECONDS);
+
+        assertEquals(1, queryCounter.get());
+
+        final Action0 action0 = new Action0() {
             @Override
-            public void call(String o) {
-                assertEquals(QUERY_RESULT, o);
-                resultCounter.incrementAndGet();
+            public void call() {
+
             }
-        });
-
-        assertEquals(1, queryCounter.get());
-        assertEquals(1, resultCounter.get());
-
-        q.notifyDataChange(DataSet.fromTable("data"));
-
-        assertEquals(1, queryCounter.get());
-        assertEquals(1, resultCounter.get());
+        };
+        Subscription subscription2 = q.execution("data", new Action0() {
+            @Override
+            public void call() {
+                action0.call();
+            }
+        }).subscribe();
 
         background.advanceTimeBy(300, TimeUnit.MILLISECONDS);
         foreground.advanceTimeBy(300, TimeUnit.MILLISECONDS);
 
         assertEquals(2, queryCounter.get());
-        assertEquals(2, resultCounter.get());
     }
 
     public void testExecution() throws Exception {
         TestScheduler background = new TestScheduler();
         TestScheduler foreground = new TestScheduler();
-        RxQuery q = new RxQuery(background, foreground, 200);
+        Action1<Action0> executor = new Action1<Action0>() {
+            @Override
+            public void call(Action0 action0) {
+                action0.call();
+            }
+        };
+        RxQuery q = new RxQuery(background, foreground, 200, executor);
 
         final AtomicInteger queryCounter = new AtomicInteger();
-        final AtomicInteger resultCounter = new AtomicInteger();
         final AtomicInteger executionCounter = new AtomicInteger();
 
-        q.updatable(new Func0<String>() {
+        q.updatable("data", new Func0<String>() {
             @Override
             public String call() {
                 queryCounter.incrementAndGet();
                 return QUERY_RESULT;
             }
-        }, DataSet.fromTable("data")).subscribe(new Action1<String>() {
-            @Override
-            public void call(String o) {
-                assertEquals(QUERY_RESULT, o);
-                resultCounter.incrementAndGet();
-            }
-        });
+        }).subscribe();
 
-        q.execution(new Func0<DataDescription>() {
+        q.execution("data", new Action0() {
             @Override
-            public DataDescription call() {
+            public void call() {
                 executionCounter.incrementAndGet();
-                return DataSet.fromTable("data");
             }
         }).subscribe();
 
-        background.triggerActions();
-        foreground.triggerActions();
+        background.advanceTimeBy(300, TimeUnit.MILLISECONDS);
+
         assertEquals(1, executionCounter.get());
-
-        background.triggerActions();
-        foreground.triggerActions();
-        background.triggerActions();
-        foreground.triggerActions();
-        background.triggerActions();
-        foreground.triggerActions();
-        background.triggerActions();
-        foreground.triggerActions();
-        background.triggerActions();
-        foreground.triggerActions();
-
-        assertEquals(1, queryCounter.get());
-        assertEquals(1, resultCounter.get());
-
-        background.advanceTimeBy(300, TimeUnit.MILLISECONDS);
-        foreground.triggerActions();
-
         assertEquals(2, queryCounter.get());
-        assertEquals(2, resultCounter.get());
 
-        q.execution(new Func0<DataDescription>() {
+        q.execution("da!!!!!!ta", new Action0() {
             @Override
-            public DataDescription call() {
+            public void call() {
                 executionCounter.incrementAndGet();
-                return DataSet.fromTable("da!!!!!!ta");
             }
         }).subscribe();
 
         background.advanceTimeBy(300, TimeUnit.MILLISECONDS);
-        foreground.triggerActions();
 
         assertEquals(2, queryCounter.get());
-        assertEquals(2, resultCounter.get());
     }
 }
