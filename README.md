@@ -48,8 +48,8 @@ Output:
 10:00 Hello, world!
 ```
 
-This an example of a data changing action. The action will be automatically called inside of transaction
-depending on RxQuery configuration (see later). The call states that the action can alter data in "users" and "messages"
+This is an example of a data changing action. The action will be automatically called inside of a transaction
+depending on the RxQuery configuration (see below). The call states that the action can alter data in "users" and "messages"
 tables, so all `updatable`s that are subscribed to these tables will be automatically updated.
 
 ``` java
@@ -82,8 +82,11 @@ At first, such objects are not immutable. Second, this breaks layers of logic.
 You can read about an effective way to architect your Android application here:
 [Architecting Android... The clean way?](http://fernandocejas.com/2014/09/03/architecting-android-the-clean-way/)
 
-The proper way to use this library is inside of a Presenter. (You're already using Model-View-Presenter, isn't it?)
-The entire pipeline would look like this (in a pseudocode).
+The proper way to use this library is inside of a Presenter.
+(You're already using [Model-View-Presenter](http://konmik.github.io/introduction-to-model-view-presenter-on-android.html), isn't it?)
+Anyway, you can use the library without MVP, the entire library is is just three simple observables.
+
+The entire pipeline with MVP would look like this (in a pseudocode).
 
 Query some data from a database:
 
@@ -91,16 +94,14 @@ Query some data from a database:
 View:
     getPresenter().querySomeData();
 
-Presenter:
+Presenter.querySomeData:
     q
         .immediate({ model.readFromDatabase() })
         .subscribe({ getView().publishSomeData(data); });
 
-Model:
-    Data readFromDatabase() {
-        your sql / orm / etc calls
-        return you data
-    }
+Model.readFromDatabase:
+    your sql / orm / etc calls
+    return data
 ```
 
 A data change:
@@ -114,9 +115,8 @@ Presenter.changeSomeData:
         .execute(changedTableName, { model.changeSomeRows(data) })
         .subscribe();
 
-Model:
-    void changeSomeRows(data) {
-    }
+Model.changeSomeRows:
+    insert / delete / update
 ```
 
 An updatable:
